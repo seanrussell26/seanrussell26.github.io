@@ -1,18 +1,24 @@
 """
-Subset Simulation (Au & Beck, 2001) for estimating small failure probabilities.
+Subset Simulation for a Linear Reliability Problem  (Python translation)
 
-The problem is posed in standard normal space: u ~ N(0, I) of dimension `dim`,
-and failure is the event g(u) <= 0.
+Translated from the MATLAB code by K.M. Zuev (Institute for Risk & Uncertainty,
+University of Liverpool).
 
-The limit-state function is defined ONCE (see `limit_state` below) and is passed
-into `subset_simulation`, so the same function is used both for the initial
-Monte Carlo level and inside the Markov chains. To try a different model you
-only edit it in one place (or pass your own function in).
+    Performance function: g(x) = x1 + ... + xd
+    Input variables x1, ..., xd are i.i.d. N(0, 1)
+    Failure  <=>  g(x) > YF
+
+The performance function is defined ONCE, in `performance_function` below.
+In the MATLAB script `sum(...)` was written out separately wherever g was
+evaluated (lines 19 and 62, and also sum(q) on line 46), so changing the model
+meant editing the script in several places. Here every evaluation calls the
+same function, so to try a new model you edit it in one place only (or pass
+your own function to `subset_simulation`).
 
 Usage examples:
-    python subset_simulation.py                       # defaults, 2D, with plot
-    python subset_simulation.py --beta 4 --N 2000     # rarer event, more samples
-    python subset_simulation.py --dim 10 --no-plot    # higher dimension
+    python subset_simulation.py                           # 2D demo + level plot
+    python subset_simulation.py --d 1000 --YF 200 --n 3000 --no-plot   # MATLAB defaults
+    python subset_simulation.py --help                    # all parameters
 """
 
 import argparse
@@ -22,227 +28,157 @@ from scipy.stats import norm
 
 
 # ---------------------------------------------------------------------------
-# Limit-state function -- the ONLY place the model is defined.
+# Performance function -- the ONLY place the model is defined.
 # ---------------------------------------------------------------------------
-def limit_state(u, beta=3.0):
-    """Linear limit state g(u) = beta - sum(u) / sqrt(d).
+def performance_function(x):
+    """System response y = g(x) = x1 + ... + xd.
 
-    `u` has shape (n_samples, dim). Failure is g(u) <= 0.
-    Exact answer for checking: Pf = Phi(-beta).
+    `x` has shape (d, n): one column per sample, as in the MATLAB code.
+    Returns an array of shape (n,).
     """
-    u = np.atleast_2d(u)
-    d = u.shape[1]
-    return beta - u.sum(axis=1) / np.sqrt(d)
+    return np.sum(x, axis=0)
 
 
 # ---------------------------------------------------------------------------
 # Subset simulation
 # ---------------------------------------------------------------------------
-def subset_simulation(g, dim, N=1000, p0=0.1, proposal_sd=1.0,
-                      max_levels=20, rng=None):
-    """Estimate Pf = P(g(u) <= 0) for u ~ N(0, I_dim).
+def subset_simulation(d, YF, n=3000, p=0.1, g=performance_function, rng=None):
+    """Estimate pF = P(g(x) > YF) for x ~ N(0, I_d).
 
     Parameters
     ----------
-    g : callable
-        Limit-state function taking an (n, dim) array, returning shape (n,).
-    dim : int
-        Number of random variables.
-    N : int
-        Samples per level.
-    p0 : float
-        Conditional probability of each intermediate level (N*p0 and 1/p0
-        must be integers).
-    proposal_sd : float
-        Std. dev. of the component-wise Gaussian proposal in modified Metropolis.
-    max_levels : int
-        Safety cap on the number of levels.
-    rng : np.random.Generator, optional
+    d   : dimension of the input space
+    YF  : critical threshold (failure <=> g(x) > YF)
+    n   : number of samples per level
+    p   : level probability
+    g   : performance function taking a (d, n) array and returning shape (n,)
+    rng : seed or np.random.Generator
 
     Returns
     -------
     dict with keys
-        'pf'         : failure probability estimate
-        'cov'        : approximate coefficient of variation of the estimate
-        'thresholds' : intermediate thresholds b_1, b_2, ... (last is 0)
-        'samples'    : list of (N, dim) arrays, one per level
-        'g_values'   : list of (N,) arrays, one per level
-        'acceptance' : mean acceptance rate at each conditional level
-        'n_calls'    : total number of limit-state evaluations
+        'pF_SS' : subset simulation estimate of the failure probability
+        'N'     : total number of samples (performance function evaluations)
+        'L'     : number of conditional levels used
+        'Y'     : intermediate thresholds Y_1, ..., Y_L
+        'nF'    : number of failure samples at each level 0, ..., L
+        'x'     : list of (d, n) sample arrays, one per level 0, ..., L
+        'y'     : list of (n,) response arrays, one per level 0, ..., L
     """
     rng = np.random.default_rng(rng)
-    Nc = int(round(N * p0))        # number of seeds (chains)
-    Ns = int(round(1 / p0))        # samples per chain
-    if Nc * Ns != N:
-        raise ValueError("N*p0 and 1/p0 must be integers with Nc*Ns == N")
+    nc = int(round(n * p))                       # number of Markov chains
+    ns = int(round((1 - p) / p))                 # number of states in each chain
+    if nc * (ns + 1) != n:
+        raise ValueError("n*p and 1/p must be integers")
 
-    # Level 0: crude Monte Carlo
-    u = rng.standard_normal((N, dim))
-    gu = g(u)
-    n_calls = N
+    # --- Level 0: Monte Carlo ------------------------------------------------
+    L = 0                                        # current (unconditional) level
+    x = [rng.standard_normal((d, n))]            # Monte Carlo samples
+    y = [g(x[0])]                                # system response y = g(x)
+    nF = [int(np.sum(y[0] > YF))]                # number of failure samples
+    Y = []
 
-    samples, g_values = [u], [gu]
-    thresholds, acceptance, delta2 = [], [], []
-    pf = None
+    while nF[L] / n < p:                         # stopping criterion
+        L += 1                                   # next conditional level is needed
+        ind = np.argsort(-y[L - 1])              # sort 'descend'
+        y[L - 1] = y[L - 1][ind]                 # renumbered responses
+        x[L - 1] = x[L - 1][:, ind]              # renumbered samples
+        Y.append((y[L - 1][nc - 1] + y[L - 1][nc]) / 2)  # L-th intermediate threshold
 
-    for level in range(max_levels):
-        order = np.argsort(gu)
-        # Intermediate threshold: the p0-quantile of g, but not below 0
-        b = max(0.5 * (gu[order[Nc - 1]] + gu[order[Nc]]), 0.0)
-        thresholds.append(b)
-        indicator = gu <= b
-        p_level = indicator.mean()
+        # --- Modified Metropolis algorithm for sampling from pi(x | F_L) ---
+        # z has shape (d, nc, ns+1): all nc chains are advanced together,
+        # which is equivalent to the MATLAB loop over j = 1..nc.
+        z = np.empty((d, nc, ns + 1))
+        z[:, :, 0] = x[L - 1][:, :nc]            # Markov chain "seeds"
+        for m in range(ns):
+            # Step 1: component-wise proposal
+            a = z[:, :, m] + rng.standard_normal((d, nc))          # Step 1(a)
+            r = np.minimum(1, norm.pdf(a) / norm.pdf(z[:, :, m]))  # Step 1(b)
+            q = np.where(rng.random((d, nc)) < r, a, z[:, :, m])   # Step 1(c)
+            # Step 2: accept q only if it belongs to F_L
+            in_FL = g(q) > Y[L - 1]
+            z[:, :, m + 1] = np.where(in_FL, q, z[:, :, m])
 
-        # c.o.v. contribution of this level
-        if level == 0:
-            delta2.append((1 - p_level) / (N * p_level))
-        else:
-            gamma = _correlation_factor(indicator.reshape(Nc, Ns), p_level)
-            delta2.append((1 - p_level) / (N * p_level) * (1 + gamma))
+        # samples from pi(x | F_L), ordered chain by chain as in the MATLAB code
+        x.append(z.reshape(d, nc * (ns + 1)))
 
-        if b <= 0.0:                       # reached the failure domain
-            pf = p0 ** level * p_level
-            break
+        y.append(g(x[L]))                        # system response y = g(x)
+        nF.append(int(np.sum(y[L] > YF)))        # number of failure samples at level L
 
-        # Seeds for the next level
-        seeds_u = u[order[:Nc]]
-        seeds_g = gu[order[:Nc]]
-        u, gu, acc = _modified_metropolis(g, seeds_u, seeds_g, b, Ns,
-                                          proposal_sd, rng)
-        n_calls += Nc * (Ns - 1)
-        samples.append(u)
-        g_values.append(gu)
-        acceptance.append(acc)
-    else:
-        # Hit max_levels without reaching g <= 0
-        pf = p0 ** max_levels
-        print("Warning: max_levels reached; estimate is an upper bound.")
+    pF_SS = p ** L * nF[L] / n                   # SS estimate
+    N = n + n * (1 - p) * L                      # total number of samples
 
-    return {
-        "pf": pf,
-        "cov": float(np.sqrt(np.sum(delta2))),
-        "thresholds": thresholds,
-        "samples": samples,
-        "g_values": g_values,
-        "acceptance": acceptance,
-        "n_calls": n_calls,
-    }
-
-
-def _modified_metropolis(g, seeds_u, seeds_g, b, Ns, proposal_sd, rng):
-    """Grow Ns-long chains from each seed, conditional on g(u) <= b.
-
-    Returned samples are ordered chain-by-chain, i.e. rows
-    [c*Ns : (c+1)*Ns] belong to chain c (seed first).
-    """
-    Nc, dim = seeds_u.shape
-    chains_u = np.empty((Nc, Ns, dim))
-    chains_g = np.empty((Nc, Ns))
-    chains_u[:, 0], chains_g[:, 0] = seeds_u, seeds_g
-    n_accept = 0
-
-    cur_u, cur_g = seeds_u.copy(), seeds_g.copy()
-    for k in range(1, Ns):
-        # 1) component-wise Metropolis step w.r.t. the standard normal pdf
-        cand = cur_u + proposal_sd * rng.standard_normal((Nc, dim))
-        ratio = np.exp(-0.5 * (cand ** 2 - cur_u ** 2))
-        keep = rng.random((Nc, dim)) < np.minimum(1.0, ratio)
-        cand = np.where(keep, cand, cur_u)
-
-        # 2) accept the candidate only if it stays in the current subset
-        moved = np.any(keep, axis=1)
-        cand_g = cur_g.copy()
-        if moved.any():
-            cand_g[moved] = g(cand[moved])
-        in_subset = moved & (cand_g <= b)
-
-        cur_u = np.where(in_subset[:, None], cand, cur_u)
-        cur_g = np.where(in_subset, cand_g, cur_g)
-        chains_u[:, k], chains_g[:, k] = cur_u, cur_g
-        n_accept += in_subset.sum()
-
-    acc = n_accept / (Nc * (Ns - 1))
-    return chains_u.reshape(Nc * Ns, dim), chains_g.reshape(Nc * Ns), acc
-
-
-def _correlation_factor(I, p):
-    """Au & Beck correlation factor gamma for Nc chains of length Ns."""
-    Nc, Ns = I.shape
-    N = Nc * Ns
-    R0 = p * (1 - p)
-    if R0 == 0:
-        return 0.0
-    gamma = 0.0
-    for k in range(1, Ns):
-        Rk = np.sum(I[:, :Ns - k] * I[:, k:]) / (N - k * Nc) - p ** 2
-        gamma += 2 * (1 - k * Nc / N) * Rk / R0
-    return gamma
+    return {"pF_SS": pF_SS, "N": int(round(N)), "L": L, "Y": Y,
+            "nF": nF, "x": x, "y": y}
 
 
 # ---------------------------------------------------------------------------
-# 2D plot of the levels
+# 2D plot of the levels (cf. Figure 6)
 # ---------------------------------------------------------------------------
-def plot_levels_2d(result, g, lim=None, filename=None):
-    """Scatter the samples of every level and the threshold contours g = b_j."""
+def plot_levels_2d(result, YF, g=performance_function, lim=None,
+                   filename=None):
+    """Scatter the samples of every level, with the intermediate thresholds
+    g(x) = Y_L as dashed lines and the failure boundary g(x) = YF."""
     import matplotlib.pyplot as plt
     from matplotlib.colors import to_rgb
 
-    samples, thresholds = result["samples"], result["thresholds"]
-    if samples[0].shape[1] != 2:
-        raise ValueError("plot_levels_2d needs dim = 2")
+    x, Y = result["x"], result["Y"]
+    if x[0].shape[0] != 2:
+        raise ValueError("plot_levels_2d needs d = 2")
 
     if lim is None:
-        allu = np.vstack(samples)
-        lim = max(4.0, np.abs(allu).max() + 0.5)
+        lim = max(4.0, np.abs(np.hstack(x)).max() + 0.5)
 
     # Ordered blue ramp for the levels (light = level 0, dark = deepest level)
     ramp = ["#86b6ef", "#5598e7", "#2a78d6", "#256abf",
             "#1c5cab", "#184f95", "#104281", "#0d366b"]
-    idx = np.linspace(0, len(ramp) - 1, len(samples)).round().astype(int)
+    idx = np.linspace(0, len(ramp) - 1, len(x)).round().astype(int)
     colours = [ramp[i] for i in idx]
     fail_colour = "#eb6834"
     ink, muted = "#2b2b2b", "#8a8a85"
+    markers = ["o", "s", "^", "D", "v", "P", "X", "*"]
 
-    x = np.linspace(-lim, lim, 300)
-    X1, X2 = np.meshgrid(x, x)
-    G = g(np.column_stack([X1.ravel(), X2.ravel()])).reshape(X1.shape)
+    t = np.linspace(-lim, lim, 300)
+    X1, X2 = np.meshgrid(t, t)
+    G = g(np.vstack([X1.ravel(), X2.ravel()])).reshape(X1.shape)
 
     fig, ax = plt.subplots(figsize=(7, 7))
-    markers = ["o", "s", "^", "D", "v", "P", "X", "*"]
-    for j, (u, c) in enumerate(zip(samples, colours)):
-        ax.scatter(u[:, 0], u[:, 1], s=14, color=c, alpha=0.85,
-                   marker=markers[j % len(markers)], linewidths=0,
-                   label=f"Level {j} samples", zorder=2 + j)
+    for L, (xL, c) in enumerate(zip(x, colours)):
+        label = "Monte Carlo samples" if L == 0 else f"Level {L} samples"
+        ax.scatter(xL[0], xL[1], s=14, color=c, alpha=0.85, linewidths=0,
+                   marker=markers[L % len(markers)], label=label, zorder=2 + L)
 
-    # Intermediate thresholds g(u) = b_j
-    for j, (b, c) in enumerate(zip(thresholds[:-1], colours)):
-        cs = ax.contour(X1, X2, G, levels=[b], colors=[c], linewidths=1.5,
+    # Intermediate thresholds g(x) = Y_L
+    for L, (YL, c) in enumerate(zip(Y, colours[1:]), start=1):
+        cs = ax.contour(X1, X2, G, levels=[YL], colors=[c], linewidths=1.5,
                         linestyles="--", zorder=20)
-        for t in ax.clabel(cs, fmt={b: f"$b_{j+1}$={b:.2f}"}, fontsize=9,
-                           colors=[ink]):
-            t.set_bbox(dict(facecolor="white", edgecolor="none", pad=1.5))
-            t.set_zorder(30)
-    # Failure boundary g(u) = 0
-    ax.contour(X1, X2, G, levels=[0], colors=[fail_colour], linewidths=2,
+        for txt in ax.clabel(cs, fmt={YL: f"$Y_{L}$={YL:.2f}"}, fontsize=9,
+                             colors=[ink]):
+            txt.set_bbox(dict(facecolor="white", edgecolor="none", pad=1.5))
+            txt.set_zorder(30)
+
+    # Failure domain g(x) > YF
+    ax.contour(X1, X2, G, levels=[YF], colors=[fail_colour], linewidths=2,
                zorder=21)
-    ax.contourf(X1, X2, G, levels=[G.min() - 1, 0],
+    ax.contourf(X1, X2, G, levels=[YF, G.max() + 1],
                 colors=[(*to_rgb(fail_colour), 0.10)], zorder=0)
-    ax.plot([], [], color=fail_colour, lw=2, label="Failure boundary g(u)=0")
+    ax.plot([], [], color=fail_colour, lw=2,
+            label=f"Failure boundary g(x) = $Y_F$ = {YF:g}")
     ax.plot([], [], color=muted, lw=1.5, ls="--",
-            label="Intermediate thresholds g(u)=$b_j$")
+            label="Intermediate thresholds g(x) = $Y_L$")
 
     ax.set_xlim(-lim, lim)
     ax.set_ylim(-lim, lim)
     ax.set_aspect("equal")
-    ax.set_xlabel("$u_1$", color=ink)
-    ax.set_ylabel("$u_2$", color=ink)
-    ax.set_title(f"Subset simulation levels  (P$_f$ ≈ {result['pf']:.3e})",
-                 color=ink)
+    ax.set_xlabel("$x_1$", color=ink)
+    ax.set_ylabel("$x_2$", color=ink)
+    ax.set_title(f"Subset simulation levels  "
+                 f"($p_F^{{SS}}$ ≈ {result['pF_SS']:.3e})", color=ink)
     ax.grid(color="#e6e5e0", lw=0.6, zorder=-1)
     for s in ax.spines.values():
         s.set_color(muted)
     ax.tick_params(colors=muted)
-    ax.legend(loc="upper left", fontsize=9, framealpha=0.9)
+    ax.legend(loc="lower left", fontsize=9, framealpha=0.9)
     fig.tight_layout()
 
     if filename:
@@ -257,37 +193,33 @@ def plot_levels_2d(result, g, lim=None, filename=None):
 # Command-line interface
 # ---------------------------------------------------------------------------
 def main():
-    p = argparse.ArgumentParser(description="Subset simulation demo")
-    p.add_argument("--dim", type=int, default=2, help="number of variables")
-    p.add_argument("--beta", type=float, default=3.0,
-                   help="reliability index in the example limit state")
-    p.add_argument("--N", type=int, default=1000, help="samples per level")
-    p.add_argument("--p0", type=float, default=0.1,
-                   help="level probability")
-    p.add_argument("--sd", type=float, default=1.0,
-                   help="proposal std. dev. for modified Metropolis")
-    p.add_argument("--seed", type=int, default=None, help="random seed")
-    p.add_argument("--save", type=str, default=None,
-                   help="save the 2D plot to this file instead of showing it")
-    p.add_argument("--no-plot", action="store_true")
-    args = p.parse_args()
+    ap = argparse.ArgumentParser(description="Subset simulation, linear problem")
+    ap.add_argument("--d", type=int, default=2,
+                    help="dimension of the input space (MATLAB: 1000)")
+    ap.add_argument("--YF", type=float, default=5.0,
+                    help="critical threshold, failure <=> g(x) > YF (MATLAB: 200)")
+    ap.add_argument("--n", type=int, default=1000,
+                    help="number of samples per level (MATLAB: 3000)")
+    ap.add_argument("--p", type=float, default=0.1, help="level probability")
+    ap.add_argument("--seed", type=int, default=None, help="random seed")
+    ap.add_argument("--save", type=str, default=None,
+                    help="save the 2D plot to this file instead of showing it")
+    ap.add_argument("--no-plot", action="store_true")
+    args = ap.parse_args()
 
-    def g(u):
-        return limit_state(u, beta=args.beta)
+    res = subset_simulation(args.d, args.YF, n=args.n, p=args.p, rng=args.seed)
 
-    res = subset_simulation(g, args.dim, N=args.N, p0=args.p0,
-                            proposal_sd=args.sd, rng=args.seed)
+    # true value of the failure probability (valid for g = sum only)
+    pF = 1 - norm.cdf(args.YF / np.sqrt(args.d))
+    print(f"Conditional levels L : {res['L']}")
+    print(f"Thresholds Y_L       : {np.round(res['Y'], 3).tolist()}")
+    print(f"Failure samples nF   : {res['nF']}")
+    print(f"Total samples N      : {res['N']}")
+    print(f"pF (subset sim)      : {res['pF_SS']:.4e}")
+    print(f"pF (true value)      : {pF:.4e}")
 
-    exact = norm.cdf(-args.beta)
-    print(f"Levels            : {len(res['samples'])}")
-    print(f"Thresholds b_j    : {np.round(res['thresholds'], 4).tolist()}")
-    print(f"Acceptance rates  : {np.round(res['acceptance'], 3).tolist()}")
-    print(f"g evaluations     : {res['n_calls']}")
-    print(f"Pf (subset sim)   : {res['pf']:.4e}   (c.o.v. ≈ {res['cov']:.2f})")
-    print(f"Pf (exact)        : {exact:.4e}")
-
-    if args.dim == 2 and not args.no_plot:
-        plot_levels_2d(res, g, filename=args.save)
+    if args.d == 2 and not args.no_plot:
+        plot_levels_2d(res, args.YF, filename=args.save)
 
 
 if __name__ == "__main__":
