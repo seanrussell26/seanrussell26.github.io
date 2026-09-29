@@ -15,16 +15,25 @@ meant editing the script in several places. Here every evaluation calls the
 same function, so to try a new model you edit it in one place only (or pass
 your own function to `subset_simulation`).
 
+Two versions of the algorithm are provided:
+    subset_simulation        - vectorised (fast); use this to experiment
+    subset_simulation_loops  - same loops as the MATLAB, line by line (slow)
+Both work for any dimension d. The level plot is drawn only when d = 2.
+
 Usage examples:
-    python subset_simulation.py                           # 2D demo + level plot
-    python subset_simulation.py --d 1000 --YF 200 --n 3000 --no-plot   # MATLAB defaults
+    python subset_simulation.py                           # MATLAB settings (d=1000, YF=200, n=3000)
+    python subset_simulation.py --d 2 --YF 5 --n 1000     # 2D: also plots the levels
+    python subset_simulation.py --d 50 --YF 30 --loops    # loop-for-loop version
     python subset_simulation.py --help                    # all parameters
 """
 
 import argparse
+import math
 
 import numpy as np
 from scipy.stats import norm
+
+SQRT_2PI = math.sqrt(2 * math.pi)
 
 
 # ---------------------------------------------------------------------------
@@ -113,6 +122,80 @@ def subset_simulation(d, YF, n=3000, p=0.1, g=performance_function, rng=None):
 
 
 # ---------------------------------------------------------------------------
+# Loop-for-loop version (mirrors the MATLAB script line by line)
+# ---------------------------------------------------------------------------
+def _normpdf(t):
+    """Scalar standard normal pdf (MATLAB normpdf)."""
+    return math.exp(-0.5 * t * t) / SQRT_2PI
+
+
+def subset_simulation_loops(d, YF, n=3000, p=0.1, g=performance_function,
+                            rng=None):
+    """Same algorithm as `subset_simulation`, written with the same loops as
+    the MATLAB code so each line can be compared directly. Numbers in the
+    comments are the MATLAB line numbers. Indices are 0-based (MATLAB i = 1
+    is Python i = 0). Much slower than `subset_simulation`; the output has
+    the same form.
+    """
+    rng = np.random.default_rng(rng)
+    nc = int(round(n * p))                         # 12: number of Markov chains
+    ns = int(round((1 - p) / p))                   # 13: number of states in each chain
+    if nc * (ns + 1) != n:
+        raise ValueError("n*p and 1/p must be integers")
+
+    L = 0                                          # 15: current (unconditional) level
+    x = [rng.standard_normal((d, n))]              # 16: Monte Carlo samples
+    y = [np.zeros(n)]
+    nF = [0]                                       # 17: number of failure samples
+    for i in range(n):                             # 18
+        y[0][i] = g(x[0][:, i:i + 1])[0]           # 19: system response y=g(x)
+        if y[0][i] > YF:                           # 20: x(:,i) is a failure sample
+            nF[0] += 1                             # 21
+    Y = []
+    while nF[L] / n < p:                           # 24: stopping criterion
+        L += 1                                     # 25: next conditional level is needed
+        ind = np.argsort(-y[L - 1], kind="stable") # 26: sort 'descend'
+        y[L - 1] = y[L - 1][ind]                   # 26: renumbered responses
+        x[L - 1] = x[L - 1][:, ind]                # 27: renumbered samples
+        Y.append((y[L - 1][nc - 1] + y[L - 1][nc]) / 2)  # 28: L-th intermediate threshold
+        z = np.zeros((d, nc, ns + 1))
+        z[:, :, 0] = x[L - 1][:, :nc]              # 29: Markov chain "seeds"
+        # 31: Modified Metropolis algorithm for sampling from pi(x | F_L)
+        q = np.zeros(d)
+        for j in range(nc):                        # 32
+            for m in range(ns):                    # 33
+                # Step 1:
+                for k in range(d):                 # 35
+                    a = z[k, j, m] + rng.standard_normal()                # 36: Step 1(a)
+                    r = min(1.0, _normpdf(a) / _normpdf(z[k, j, m]))      # 37: Step 1(b)
+                    if rng.random() < r:           # 39: Step 1(c)
+                        q[k] = a                   # 40
+                    else:
+                        q[k] = z[k, j, m]          # 42
+                # Step 2:
+                if g(q[:, None])[0] > Y[L - 1]:    # 46: q belongs to F_L
+                    z[:, j, m + 1] = q             # 47
+                else:
+                    z[:, j, m + 1] = z[:, j, m]    # 49
+        x.append(np.zeros((d, n)))
+        for j in range(nc):                        # 53
+            for m in range(ns + 1):                # 54
+                x[L][:, j * (ns + 1) + m] = z[:, j, m]   # 55: samples from pi(x | F_L)
+        del z                                      # 58
+        nF.append(0)                               # 60
+        y.append(np.zeros(n))
+        for i in range(n):                         # 61
+            y[L][i] = g(x[L][:, i:i + 1])[0]       # 62: system response y=g(x)
+            if y[L][i] > YF:                       # 63: failure sample
+                nF[L] += 1                         # 64: number of failure samples at level L
+    pF_SS = p ** L * nF[L] / n                     # 68: SS estimate
+    N = n + n * (1 - p) * L                        # 69: total number of samples
+
+    return {"pF_SS": pF_SS, "N": int(round(N)), "L": L, "Y": Y,
+            "nF": nF, "x": x, "y": y}
+
+
+# ---------------------------------------------------------------------------
 # 2D plot of the levels (cf. Figure 6)
 # ---------------------------------------------------------------------------
 def plot_levels_2d(result, YF, g=performance_function, lim=None,
@@ -194,20 +277,24 @@ def plot_levels_2d(result, YF, g=performance_function, lim=None,
 # ---------------------------------------------------------------------------
 def main():
     ap = argparse.ArgumentParser(description="Subset simulation, linear problem")
-    ap.add_argument("--d", type=int, default=2,
-                    help="dimension of the input space (MATLAB: 1000)")
-    ap.add_argument("--YF", type=float, default=5.0,
-                    help="critical threshold, failure <=> g(x) > YF (MATLAB: 200)")
-    ap.add_argument("--n", type=int, default=1000,
-                    help="number of samples per level (MATLAB: 3000)")
+    ap.add_argument("--d", type=int, default=1000,
+                    help="dimension of the input space")
+    ap.add_argument("--YF", type=float, default=200.0,
+                    help="critical threshold, failure <=> g(x) > YF")
+    ap.add_argument("--n", type=int, default=3000,
+                    help="number of samples per level")
     ap.add_argument("--p", type=float, default=0.1, help="level probability")
     ap.add_argument("--seed", type=int, default=None, help="random seed")
     ap.add_argument("--save", type=str, default=None,
                     help="save the 2D plot to this file instead of showing it")
-    ap.add_argument("--no-plot", action="store_true")
+    ap.add_argument("--no-plot", action="store_true",
+                    help="skip the plot when d = 2")
+    ap.add_argument("--loops", action="store_true",
+                    help="use the loop-for-loop MATLAB version (slow)")
     args = ap.parse_args()
 
-    res = subset_simulation(args.d, args.YF, n=args.n, p=args.p, rng=args.seed)
+    run = subset_simulation_loops if args.loops else subset_simulation
+    res = run(args.d, args.YF, n=args.n, p=args.p, rng=args.seed)
 
     # true value of the failure probability (valid for g = sum only)
     pF = 1 - norm.cdf(args.YF / np.sqrt(args.d))

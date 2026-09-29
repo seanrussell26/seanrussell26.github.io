@@ -5,10 +5,20 @@ reliability problem: g(x) = x1 + ... + xd, x ~ N(0, I), failure <=> g(x) > YF.
 
 Requires `numpy`, `scipy`, `matplotlib`.
 
+Two versions are provided, both for any dimension `d`:
+
+- `subset_simulation` - vectorised (fast); use it for experiments.
+- `subset_simulation_loops` - the same loops as the MATLAB script, with the
+  MATLAB line numbers in the comments (slow: ~40 s for the original settings).
+
+The level plot (cf. Figure 6) is drawn only when `d = 2`.
+
 ```bash
-python subset_simulation.py --seed 1 --save levels_2d.png                # 2D demo + level plot (cf. Figure 6)
-python subset_simulation.py --d 1000 --YF 200 --n 3000 --no-plot         # original MATLAB settings
-python subset_simulation.py --help                                       # all parameters
+python subset_simulation.py                                  # MATLAB settings: d=1000, YF=200, n=3000
+python subset_simulation.py --d 2 --YF 5 --n 1000 --seed 1   # 2D: also plots the levels
+python subset_simulation.py --d 50 --YF 30 --p 0.2           # any other parameters
+python subset_simulation.py --loops                          # loop-for-loop version
+python subset_simulation.py --help                           # all parameters
 ```
 
 The performance function is defined once, in `performance_function()`. In the
