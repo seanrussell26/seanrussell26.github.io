@@ -20,7 +20,7 @@ evaluation calls the same function, so to try a new model you only edit it
 in one place.
 
 HOW TO RUN: set the parameters just below, then run this file. The results
-are printed, and when d = 2 the level plot (cf. Figure 6) opens in a window.
+are printed, and when d = 2 the level plot (in the style of Figure 6) opens in a window.
 Works for any dimension d; the plot is only drawn for d = 2.
 """
 
@@ -35,7 +35,7 @@ SQRT_2PI = math.sqrt(2 * math.pi)
 # PARAMETERS -- edit these (original MATLAB values in brackets)
 # ===========================================================================
 d = 2          # dimension of the input space            [MATLAB: 1000]
-YF = 5.0       # critical threshold (failure <=> g(x) > YF) [MATLAB: 200]
+YF = 9.0       # critical threshold (failure <=> g(x) > YF) [MATLAB: 200]
 n = 1000       # number of samples per level             [MATLAB: 3000]
 p = 0.1        # level probability                       [MATLAB: 0.1]
 SEED = None    # random seed: an integer for repeatable results, None for random
@@ -133,72 +133,96 @@ def subset_simulation_loops(d, YF, n=3000, p=0.1, g=performance_function,
 
 
 # ---------------------------------------------------------------------------
-# 2D plot of the levels (cf. Figure 6)
+# 2D plot of the levels (in the style of Figure 6)
 # ---------------------------------------------------------------------------
+# One colour per level, in the same spectrum order as Figure 6:
+# red (Monte Carlo), magenta, blue, green, cyan, olive, lime, yellow, navy,
+# orange-red. If there are more levels than colours, the list starts again.
+LEVEL_COLOURS = ["#ff0000", "#e000e0", "#0000ff", "#007f00", "#00c0c0",
+                 "#b0b000", "#00e000", "#ffff00", "#1f2f7f", "#e03000"]
+
+
+def _point_nearest(cs, target, lo, hi):
+    """Point on the contour line(s) in `cs` closest to `target`, keeping
+    away from the plot edges (between lo and hi) where possible."""
+    pts = [seg for seg in cs.allsegs[0] if len(seg)]
+    if not pts:
+        return None                            # curve not visible in the plot
+    pts = np.vstack(pts)
+    inside = np.all((pts > lo) & (pts < hi), axis=1)
+    if inside.any():
+        pts = pts[inside]
+    return pts[np.argmin(np.sum((pts - target) ** 2, axis=1))]
+
+
 def plot_levels_2d(result, YF, g=performance_function, lim=None,
-                   filename=None):
-    """Scatter the samples of every level, with the intermediate thresholds
-    g(x) = Y_L as dashed lines and the failure boundary g(x) = YF."""
+                   filename=None, legend=True):
+    """Plot the samples of every level (one colour per level), the
+    intermediate thresholds g(x) = Y_L as dashed lines labelled F_1, F_2, ...
+    and the failure boundary g(x) = YF as a solid line labelled F."""
     import matplotlib.pyplot as plt
-    from matplotlib.colors import to_rgb
 
     x, Y = result["x"], result["Y"]
     if x[0].shape[0] != 2:
         raise ValueError("plot_levels_2d needs d = 2")
 
+    # Axis range: a whole-number square that contains every sample
     if lim is None:
-        lim = max(4.0, np.abs(np.hstack(x)).max() + 0.5)
+        allx = np.hstack(x)
+        lim = (np.floor(allx.min() - 0.2), np.ceil(allx.max() + 0.2))
 
-    # Ordered blue ramp for the levels (light = level 0, dark = deepest level)
-    ramp = ["#86b6ef", "#5598e7", "#2a78d6", "#256abf",
-            "#1c5cab", "#184f95", "#104281", "#0d366b"]
-    idx = np.linspace(0, len(ramp) - 1, len(x)).round().astype(int)
-    colours = [ramp[i] for i in idx]
-    fail_colour = "#eb6834"
-    ink, muted = "#2b2b2b", "#8a8a85"
-    markers = ["o", "s", "^", "D", "v", "P", "X", "*"]
-
-    t = np.linspace(-lim, lim, 300)
+    # Evaluate g on a grid so the threshold curves can be drawn as contours
+    t = np.linspace(lim[0], lim[1], 400)
     X1, X2 = np.meshgrid(t, t)
     G = g(np.vstack([X1.ravel(), X2.ravel()])).reshape(X1.shape)
 
     fig, ax = plt.subplots(figsize=(7, 7))
-    for L, (xL, c) in enumerate(zip(x, colours)):
-        label = "Monte Carlo samples" if L == 0 else f"Level {L} samples"
-        ax.scatter(xL[0], xL[1], s=14, color=c, alpha=0.85, linewidths=0,
-                   marker=markers[L % len(markers)], label=label, zorder=2 + L)
 
-    # Intermediate thresholds g(x) = Y_L
-    for L, (YL, c) in enumerate(zip(Y, colours[1:]), start=1):
-        cs = ax.contour(X1, X2, G, levels=[YL], colors=[c], linewidths=1.5,
-                        linestyles="--", zorder=20)
-        for txt in ax.clabel(cs, fmt={YL: f"$Y_{L}$={YL:.2f}"}, fontsize=9,
-                             colors=[ink]):
-            txt.set_bbox(dict(facecolor="white", edgecolor="none", pad=1.5))
-            txt.set_zorder(30)
+    # Samples: level 0 (Monte Carlo) first, then each conditional level
+    for L, xL in enumerate(x):
+        colour = LEVEL_COLOURS[L % len(LEVEL_COLOURS)]
+        label = "Monte Carlo (level 0)" if L == 0 else f"Level {L}"
+        ax.scatter(xL[0], xL[1], s=5, color=colour, linewidths=0,
+                   label=label, zorder=2)
 
-    # Failure domain g(x) > YF
-    ax.contour(X1, X2, G, levels=[YF], colors=[fail_colour], linewidths=2,
-               zorder=21)
-    ax.contourf(X1, X2, G, levels=[YF, G.max() + 1],
-                colors=[(*to_rgb(fail_colour), 0.10)], zorder=0)
-    ax.plot([], [], color=fail_colour, lw=2,
-            label=f"Failure boundary g(x) = $Y_F$ = {YF:g}")
-    ax.plot([], [], color=muted, lw=1.5, ls="--",
-            label="Intermediate thresholds g(x) = $Y_L$")
+    # Labels go at the top-left end of each curve, away from the samples
+    span = lim[1] - lim[0]
+    lo, hi = lim[0] + 0.08 * span, lim[1] - 0.08 * span   # label-safe area
+    corner = np.array([lo, hi])
 
-    ax.set_xlim(-lim, lim)
-    ax.set_ylim(-lim, lim)
+    # Intermediate thresholds: boundary of F_L = {x : g(x) > Y_L}
+    for L, YL in enumerate(Y, start=1):
+        cs = ax.contour(X1, X2, G, levels=[YL], colors="k", linewidths=0.8,
+                        linestyles="--", zorder=3)
+        pt = _point_nearest(cs, corner, lo, hi)
+        if pt is not None:
+            ax.clabel(cs, fmt={YL: f"$F_{{{L}}}$"}, fontsize=12, colors="k",
+                      manual=[pt])
+
+    # Failure domain F = {x : g(x) > YF}, labelled just inside the domain
+    cs = ax.contour(X1, X2, G, levels=[YF], colors="k", linewidths=1.5,
+                    zorder=3)
+    pt = _point_nearest(cs, corner, lo, hi)
+    if pt is not None:
+        h = 1e-4 * span                        # numerical gradient of g at pt
+        grad = np.array([
+            g(np.array([[pt[0] + h], [pt[1]]]))[0] - g(np.array([[pt[0] - h], [pt[1]]]))[0],
+            g(np.array([[pt[0]], [pt[1] + h]]))[0] - g(np.array([[pt[0]], [pt[1] - h]]))[0]])
+        if np.linalg.norm(grad) > 0:
+            # step from the boundary into F (direction of increasing g)
+            pos = np.clip(pt + 0.06 * span * grad / np.linalg.norm(grad),
+                          lim[0] + 0.03 * span, lim[1] - 0.03 * span)
+            ax.text(*pos, "$F$", fontsize=15, ha="center", va="center")
+
+    ax.set_xlim(lim)
+    ax.set_ylim(lim)
     ax.set_aspect("equal")
-    ax.set_xlabel("$x_1$", color=ink)
-    ax.set_ylabel("$x_2$", color=ink)
-    ax.set_title(f"Subset simulation levels  "
-                 f"($p_F^{{SS}}$ ≈ {result['pF_SS']:.3e})", color=ink)
-    ax.grid(color="#e6e5e0", lw=0.6, zorder=-1)
-    for s in ax.spines.values():
-        s.set_color(muted)
-    ax.tick_params(colors=muted)
-    ax.legend(loc="lower left", fontsize=9, framealpha=0.9)
+    ax.set_xlabel("$x_1$")
+    ax.set_ylabel("$x_2$")
+    ax.set_title(f"Subset simulation: {len(Y)} levels, "
+                 f"$p_F^{{SS}}$ = {result['pF_SS']:.3e}")
+    if legend:
+        ax.legend(loc="best", fontsize=8, markerscale=2.5, framealpha=0.9)
     fig.tight_layout()
 
     if filename:
@@ -206,7 +230,6 @@ def plot_levels_2d(result, YF, g=performance_function, lim=None,
         print(f"Saved plot to {filename}")
     plt.show()
     return fig, ax
-
 
 
 # ===========================================================================
