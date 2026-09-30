@@ -24,6 +24,8 @@ are printed, and when d = 2 the level plot (in the style of Figure 6) opens in a
 Works for any dimension d; the plot is only drawn for d = 2.
 """
 
+import time
+
 import numpy as np
 from scipy.stats import norm
 
@@ -227,7 +229,9 @@ def plot_levels_2d(result, YF, g=performance_function, lim=None,
 # Run
 # ===========================================================================
 if __name__ == "__main__":
+    start = time.perf_counter()               # start the timer
     res = subset_simulation(d, YF, n=n, p=p, rng=SEED)
+    run_time = time.perf_counter() - start    # seconds the simulation took
 
     pF = 1 - norm.cdf(YF / np.sqrt(d))    # true value (valid for g = sum only)
     print(f"Conditional levels L : {res['L']}")
@@ -236,6 +240,7 @@ if __name__ == "__main__":
     print(f"Total samples N      : {res['N']}")
     print(f"pF (subset sim)      : {res['pF_SS']:.4e}")
     print(f"pF (true value)      : {pF:.4e}")
+    print(f"Run time             : {run_time:.2f} s")
 
     if d == 2:
         plot_levels_2d(res, YF, filename=SAVE_PLOT)
