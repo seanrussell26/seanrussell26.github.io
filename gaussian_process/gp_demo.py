@@ -2,7 +2,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.gaussian_process.kernels import RBF, ConstantKernel, WhiteKernel
+from sklearn.gaussian_process.kernels import RBF, ConstantKernel
 
 
 # ---- Your settings ----------------------------------------------------------
@@ -22,7 +22,7 @@ x_test = np.random.uniform(lower, upper, (n_test, n_dims))
 y_train = performance_function(x_train)
 y_test = performance_function(x_test)
 
-kernel = ConstantKernel() * RBF(length_scale=np.ones(n_dims)) + WhiteKernel(1e-4)
+kernel = ConstantKernel() * RBF(length_scale=np.ones(n_dims))
 gp = GaussianProcessRegressor(kernel=kernel, normalize_y=True, n_restarts_optimizer=10)
 gp.fit(x_train, y_train)
 
