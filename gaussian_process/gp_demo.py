@@ -50,18 +50,22 @@ if n_dims == 1:
     plt.plot(x_train, y_train, "ko", label="Training points")
     plt.legend()
 
-# Plot 2 (2 inputs only): 3D surfaces of the true and predicted function
+# Plot 2 (2 inputs only): 3D surface of the prediction, coloured by its error
 if n_dims == 2:
     g = np.linspace(lower, upper, 50)
     X1, X2 = np.meshgrid(g, g)
     grid = np.column_stack([X1.ravel(), X2.ravel()])
+    z_pred = gp.predict(grid).reshape(X1.shape)
+    error = np.abs(z_pred - performance_function(grid).reshape(X1.shape))
 
-    fig = plt.figure(figsize=(12, 5))
-    for i, (z, title) in enumerate([(performance_function(grid), "True"), (gp.predict(grid), "Predicted")]):
-        ax = fig.add_subplot(1, 2, i + 1, projection="3d")
-        ax.plot_surface(X1, X2, z.reshape(X1.shape), cmap="viridis")
-        ax.set_title(title)
-        ax.set_xlabel("x1")
-        ax.set_ylabel("x2")
+    colours = plt.Normalize(0, error.max())
+    fig = plt.figure(figsize=(8, 6))
+    ax = fig.add_subplot(projection="3d")
+    ax.plot_surface(X1, X2, z_pred, facecolors=plt.cm.RdYlGn_r(colours(error)))
+    fig.colorbar(plt.cm.ScalarMappable(colours, "RdYlGn_r"), ax=ax, shrink=0.6, pad=0.1, label="Absolute error")
+    ax.set_xlabel("x1")
+    ax.set_ylabel("x2")
+    ax.set_zlabel("Predicted value")
+    ax.set_title("Emulator prediction, coloured by error")
 
 plt.show()
