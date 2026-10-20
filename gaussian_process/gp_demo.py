@@ -2,27 +2,30 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.gaussian_process.kernels import RBF, ConstantKernel
+from sklearn.gaussian_process.kernels import RBF, ConstantKernel, WhiteKernel
 
 
 # ---- Your settings ----------------------------------------------------------
 def performance_function(x):
-    """x has shape (n_points, n_dims). Return one value per point."""
-    return np.sin(3 * x[:, 0]) * np.cos(3 * x[:, 1])
+    x1 = x[:, 0]
+    return np.sin(3*x1)*np.cos(5*x1) - np.exp(-x1**2 - 0.3)
 
-n_dims = 2            # number of inputs
-lower, upper = -1, 1  # range of every input
-n_train = 30          # runs of the performance function used to train the emulator
-n_test = 50           # extra runs used only to check the emulator
+n_dims = 1            # number of inputs
+lower, upper = -5, 5  # range of every input
+n_train = 80          # runs of the performance function used to train the emulator
+n_test = 100          # extra runs used only to check the emulator
+noise = 0.05          # size of random noise added to training samples (0 = none)
 # -----------------------------------------------------------------------------
 
 np.random.seed(42)
 x_train = np.random.uniform(lower, upper, (n_train, n_dims))
 x_test = np.random.uniform(lower, upper, (n_test, n_dims))
-y_train = performance_function(x_train)
+y_train = performance_function(x_train) + noise * np.random.randn(n_train)
 y_test = performance_function(x_test)
 
 kernel = ConstantKernel() * RBF(length_scale=np.ones(n_dims))
+if noise > 0:
+    kernel = kernel + WhiteKernel()  # lets the emulator learn the noise level
 gp = GaussianProcessRegressor(kernel=kernel, normalize_y=True, n_restarts_optimizer=10)
 gp.fit(x_train, y_train)
 
